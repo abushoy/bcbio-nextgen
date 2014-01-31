@@ -10,7 +10,8 @@ import pysam
 from bcbio import utils, broad
 from bcbio.log import logger
 from bcbio.bam import callable, ref
-from bcbio.bam.trim import brun_trim_fastq, trim_read_through
+from bcbio.bam.trim import trim_read_through
+from bcbio.distributed import prun
 from bcbio.pipeline.fastq import get_fastq_files, needs_fastq_conversion
 from bcbio.pipeline.alignment import align_to_sort_bam
 from bcbio.pipeline import cleanbam
@@ -27,12 +28,21 @@ def _item_needs_compute(lane_items):
             return True
     return False
 
-def process_all_lanes(lanes, run_parallel):
+def _wprogs(parallel, progs):
+    """Add program information to the parallel environment, making a clean copy.
+    """
+    parallel = copy.deepcopy(parallel)
+    parallel["progs"] = progs
+    return parallel
+
+def process_all_lanes(lanes, parallel, dirs, config):
     """Process all input lanes, avoiding starting a cluster if not needed.
     """
     lanes = list(lanes)
     if _item_needs_compute(lanes):
-        return run_parallel("process_lane", [[x] for x in lanes])
+        with prun.start(_wprogs(parallel, ["picard"]),
+                        lanes, config, dirs, "laneprocess") as run_parallel:
+            return run_parallel("process_lane", [[x] for x in lanes])
     else:
         return [process_lane(x)[0] for x in lanes]
 
@@ -69,21 +79,10 @@ def trim_lane(item):
         return [[item]]
 
     # swap the default to None if trim_reads gets deprecated
-
-    if trim_reads == "low_quality" or trim_reads == "true":
-        logger.info("Trimming low quality ends from %s."
-                    % (", ".join(to_trim)))
-        out_files = brun_trim_fastq(to_trim, dirs, config)
-
     if trim_reads == "read_through":
         logger.info("Trimming low quality ends and read through adapter "
                     "sequence from %s." % (", ".join(to_trim)))
         out_files = trim_read_through(to_trim, dirs, config)
-
-    else:
-        logger.info("Trimming low quality ends from %s."
-                    % (", ".join(to_trim)))
-        out_files = brun_trim_fastq(to_trim, dirs, config)
     item["files"] = out_files
     return [[item]]
 
@@ -186,4 +185,3 @@ def _recal_no_markduplicates(data):
     data = recalibrate.prep_recal(data)[0][0]
     data["config"] = orig_config
     return data
-
